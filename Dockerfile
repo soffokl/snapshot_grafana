@@ -1,14 +1,13 @@
-#  snapshot_grafana
-## Cli tool for taking Grafana dashboard snapshots
-FROM scratch
-MAINTAINER Alex Rudd <github.com/AlexRudd/key-manager/issues>
+FROM golang:1.13-alpine AS builder
 
-# Get ca-certificates.crt file for https requests
-# Fails in Docker 1.12.x, waiting for 1.13.x (https://github.com/docker/docker/issues/28694#issuecomment-280358399)
-# ADD https://curl.haxx.se/ca/cacert.pem /etc/ssl/certs/ca-certificates.crt
-COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+# Install application
+WORKDIR /go/src/github.com/soffokl/snapshot_grafana
+ADD . .
 
-# Add executable
-COPY snapshot_grafana /
+# Build application
+RUN go build -o snapshot_grafana main.go
 
+FROM alpine:latest
+
+COPY --from=builder /go/src/github.com/soffokl/snapshot_grafana/snapshot_grafana /snapshot_grafana
 ENTRYPOINT ["/snapshot_grafana"]

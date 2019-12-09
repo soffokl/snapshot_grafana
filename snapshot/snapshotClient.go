@@ -7,16 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"log"
 	"github.com/prometheus/client_golang/api"
-	"github.com/prometheus/client_golang/api/prometheus/v1"
+	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
 )
 
@@ -90,71 +91,77 @@ func (sc *SnapClient) Take(config *TakeConfig) (*Snapshot, error) {
 	}
 
 	// For each row in dashboard...
-	for _, row := range dash["dashboard"].(map[string]interface{})["rows"].([]interface{}) {
-		// For each panel in row...
-		for _, p := range row.(map[string]interface{})["panels"].([]interface{}) {
-			panel := p.(map[string]interface{})
-			// Get the datasource and targets
-			datasourceName := panel["datasource"].(string)
-			targets := panel["targets"].([]interface{})
-			// For each target in panel...
-			for _, t := range targets {
-				target := t.(map[string]interface{})
-				// Calculate “step” like Grafana. For the original code, see:
-				// https://github.com/grafana/grafana/blob/79138e211fac98bf1d12f1645ecd9fab5846f4fb/public/app/plugins/datasource/prometheus/datasource.ts#L83
-				intervalFactor := float64(1)
-				if target["intervalFactor"] != nil {
-					intervalFactor = target["intervalFactor"].(float64)
-				}
-				interval := time.Second * 30
-				if target["interval"] != nil && target["interval"].(string) != "" {
-					log.Printf(target["interval"].(string))
-					interval, err = time.ParseDuration(target["interval"].(string))
-				}
+	for _, p := range dash["dashboard"].(map[string]interface{})["panels"].([]interface{}) {
+		panel := p.(map[string]interface{})
+		// Get the datasource and targets
+		datasourceName, _ := panel["datasource"].(string) // It's OK to have nil/empty datasource name. The default datasource will be used in this case.
+		targets := panel["targets"].([]interface{})
+
+		if s, ok := panel["timeShift"].(string); ok {
+			from, to, err := monthRange(*config.To, s)
+			if err != nil {
+				return nil, err
+			}
+			c.From, c.To = &from, &to
+		}
+
+		// For each target in panel...
+		for _, t := range targets {
+			target := t.(map[string]interface{})
+			// Calculate “step” like Grafana. For the original code, see:
+			// https://github.com/grafana/grafana/blob/79138e211fac98bf1d12f1645ecd9fab5846f4fb/public/app/plugins/datasource/prometheus/datasource.ts#L83
+			intervalFactor := float64(1)
+			if target["intervalFactor"] != nil {
+				intervalFactor = target["intervalFactor"].(float64)
+			}
+			interval := time.Second * 30
+			if target["interval"] != nil && target["interval"].(string) != "" {
+				log.Printf(target["interval"].(string))
+				interval, err = time.ParseDuration(target["interval"].(string))
+			}
+			if err != nil {
+				return nil, err
+			}
+			step := interval.Seconds() * intervalFactor
+			// Lookup datasource
+			datasource := datasourceMap[datasourceName].(map[string]interface{})
+
+			// Fetch data points from datasource proxy
+			var dataPoints []snapshotData
+			switch datasource["type"].(string) {
+			case "prometheus":
+				dataPoints, err = sc.fetchDataPointsPrometheus(c, target, datasource, step)
 				if err != nil {
 					return nil, err
 				}
-				step := interval.Seconds() * intervalFactor
-				// Lookup datasource
-				datasource := datasourceMap[datasourceName].(map[string]interface{})
-
-				// Fetch data points from datasource proxy
-				var dataPoints []snapshotData
-				switch datasource["type"].(string) {
-				case "prometheus":
-					dataPoints, err = sc.fetchDataPointsPrometheus(c, target, datasource, step)
-					if err != nil {
-						return nil, err
-					}
-				case "elasticsearch":
-					dataPoints, err = sc.fetchDataPointsElastic(c, target, datasource, step)
-					if err != nil {
-						return nil, err
-					}
-				default:
-					// unsupported
-					continue
+			case "elasticsearch":
+				dataPoints, err = sc.fetchDataPointsElastic(c, target, datasource, step)
+				if err != nil {
+					return nil, err
 				}
-				var snapshotData []interface{}
-				// build snapshot data
-				for idx, dp := range dataPoints {
-					if target["legendFormat"] != nil && target["legendFormat"].(string) != "" {
-						dp.Target = sc.renderTemplate(target["legendFormat"].(string), dp.Metric)
-					} else {
-						dp.Target = dp.Metric.String()
-					}
-					dataPoints[idx] = dp
-					snapshotData = append(snapshotData, dp)
-				}
-				if snapshotData == nil {
-					snapshotData = []interface{}{}
-				}
-				// insert snapshot data into panels
-				panel["snapshotData"] = snapshotData
-				panel["targets"] = []interface{}{}
-				panel["links"] = []interface{}{}
-				panel["datasource"] = []interface{}{}
+			default:
+				// unsupported
+				continue
 			}
+			var snapshotData []interface{}
+			// build snapshot data
+			for idx, dp := range dataPoints {
+				if target["legendFormat"] != nil && target["legendFormat"].(string) != "" {
+					dp.Target = sc.renderTemplate(target["legendFormat"].(string), dp.Metric)
+				} else {
+					dp.Target = dp.Metric.String()
+				}
+				dataPoints[idx] = dp
+				snapshotData = append(snapshotData, dp)
+			}
+			if snapshotData == nil {
+				snapshotData = []interface{}{}
+			}
+			// insert snapshot data into panels
+			panel["snapshotData"] = snapshotData
+			panel["targets"] = []interface{}{}
+			panel["links"] = []interface{}{}
+			panel["datasource"] = []interface{}{}
 		}
 	}
 
@@ -168,14 +175,20 @@ func (sc *SnapClient) Take(config *TakeConfig) (*Snapshot, error) {
 	snapshot["dashboard"] = dash["dashboard"]
 	snapshot["expires"] = (c.Expires / time.Second)
 	snapshot["name"] = c.SnapshotName
+	snapshot["key"] = c.SnapshotKey
 	b, err := json.Marshal(snapshot)
 
+	if c.SnapshotReplace {
+		if err := removeSnapshot(*sc.config.SnapshotAddr, c.SnapshotKey, sc.config.SnapshotAPIKey); err != nil {
+			log.Printf("Failed to remove snapshot '%s': %v", c.SnapshotKey, err)
+		}
+	}
 	// Post Snapshot
 	reqURL := *sc.config.SnapshotAddr
 	reqURL.Path = reqURL.Path + "api/snapshots"
 	log.Printf("Posting snapshot to: %s", reqURL.String())
 
-	req, err := http.NewRequest("post", reqURL.String(), bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, reqURL.String(), bytes.NewReader(b))
 	if err != nil {
 		return nil, err
 	}
@@ -206,9 +219,9 @@ func (sc *SnapClient) Take(config *TakeConfig) (*Snapshot, error) {
 func (sc *SnapClient) getDashboardDef(config *TakeConfig) (string, error) {
 	// Get dashboard def
 	reqURL := *sc.config.GrafanaAddr
-	reqURL.Path = reqURL.Path + "api/dashboards/db/" + config.DashSlug
+	reqURL.Path = reqURL.Path + "api/dashboards/uid/" + config.DashUID
 
-	req, err := http.NewRequest("get", reqURL.String(), nil)
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -230,7 +243,7 @@ func (sc *SnapClient) getDatasourceDefs() (map[string]interface{}, error) {
 	reqURL := *sc.config.GrafanaAddr
 	reqURL.Path = reqURL.Path + "api/datasources"
 
-	req, err := http.NewRequest("get", reqURL.String(), nil)
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +269,9 @@ func (sc *SnapClient) getDatasourceDefs() (map[string]interface{}, error) {
 	// map datasources to their names
 	datasourceMap := make(map[string]interface{})
 	for _, ds := range datasources {
+		if ds.(map[string]interface{})["isDefault"].(bool) {
+			datasourceMap[""] = ds
+		}
 		datasourceMap[ds.(map[string]interface{})["name"].(string)] = ds
 	}
 
@@ -349,4 +365,41 @@ func (sc *SnapClient) renderTemplate(format string, metric model.Metric) string 
 		matches := aliasRe.FindStringSubmatch(match)
 		return string(metric[model.LabelName(matches[1])])
 	})
+}
+
+func monthRange(now time.Time, timeShift string) (begin, end time.Time, err error) {
+	// TODO make parsing of all formats for time shift feature.
+	shift, err := strconv.Atoi(strings.Trim(timeShift, "M/M"))
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+
+	currentYear, currentMonth, _ := now.Date()
+	begin = time.Date(currentYear, currentMonth, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0-shift, 0)
+	end = begin.AddDate(0, 1, 0).Add(-time.Nanosecond)
+
+	return begin, end, err
+}
+
+func removeSnapshot(url url.URL, key, token string) error {
+	reqURL := url
+	reqURL.Path = reqURL.Path + "api/snapshots/" + key
+
+	req, err := http.NewRequest(http.MethodDelete, reqURL.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Add("Authorization", "Bearer "+token)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("Unexpected status code when deleting snapshot: %s", resp.Status)
+	}
+
+	return nil
 }

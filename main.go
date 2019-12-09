@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alexrudd/snapshot_grafana/snapshot"
+	"github.com/soffokl/snapshot_grafana/snapshot"
 )
 
 var (
@@ -18,9 +18,11 @@ var (
 	grafanaAPIKey   = flag.String("grafana_api_key", "", "The address of the Grafana instance to snapshot.")
 	snapshotAddr    = flag.String("snapshot_addr", "", "The location to submit the snapshot. Defaults to the grafana address.")
 	snapshotAPIKey  = flag.String("snapshot_api_key", "", "The address of the Grafana instance to snapshot.")
-	dashSlug        = flag.String("dashboard_slug", "", "The url friendly version of the dashboard title to snapshot from the \"grafana_addr\" address.")
+	dashUID         = flag.String("dashboard_uid", "", "The dashboard UID to snapshot from.")
 	snapshotExpires = flag.Duration("snapshot_expires", 0, "How long to keep the snapshot for (60s, 1h, 10d, etc), defaults to never.")
 	snapshotName    = flag.String("snapshot_name", "", "What to call the snapshot. Defaults to \"from\" date plus dashboard slug.")
+	snapshotKey     = flag.String("snapshot_key", "", "The snapshot identification key. It will be generated if empty key provided.")
+	snapshotReplace = flag.Bool("snapshot_replace", false, "The flag to replace the existing snapshot if it already exists with the same key.")
 	fromTimestamp   = flag.String("from", (time.Now().Truncate(time.Hour * 24)).Format(timeLayout), "The \"from\" time range. Must be absolute in the form \"YYYY-MM-DD HH:mm:ss\" (\"2017-01-23 12:34:56\"). Defaults to start of day.")
 	toTimestamp     = flag.String("to", time.Now().Format(timeLayout), "The \"to\" time range. Must be absolute in the form \"YYYY-MM-DD HH:mm:ss\" (\"2017-01-23 12:34:57\"). Must be greater than to \"to\" value. Defaults to now")
 	templateVars    = flag.String("template_vars", "", "a list of key value pairs to set the dashboard's template variables, in the format 'key1=val1;key2=val2'")
@@ -67,13 +69,13 @@ func parseAndValidateFlags() (*snapshot.Config, *snapshot.TakeConfig, error) {
 	config.SnapshotAPIKey = *snapshotAPIKey
 
 	// Dashboard slug
-	if len(*dashSlug) == 0 {
+	if len(*dashUID) == 0 {
 		return nil, nil, errors.New("\"dashboard_slug\" cannot be empty")
 	}
-	if strings.Index(*dashSlug, " ") != -1 {
+	if strings.Index(*dashUID, " ") != -1 {
 		return nil, nil, errors.New("\"dashboard_slug\" contained an invalid character: \" \"")
 	}
-	takeConfig.DashSlug = *dashSlug
+	takeConfig.DashUID = *dashUID
 
 	// Parse expiry
 	takeConfig.Expires = *snapshotExpires
@@ -93,9 +95,11 @@ func parseAndValidateFlags() (*snapshot.Config, *snapshot.TakeConfig, error) {
 
 	// Parse name
 	if len(*snapshotName) == 0 {
-		*snapshotName = fmt.Sprintf("%s %s", takeConfig.To.Format("2006-01-02"), takeConfig.DashSlug)
+		*snapshotName = fmt.Sprintf("%s %s", takeConfig.To.Format("2006-01-02"), takeConfig.DashUID)
 	}
 	takeConfig.SnapshotName = *snapshotName
+	takeConfig.SnapshotKey = *snapshotKey
+	takeConfig.SnapshotReplace = *snapshotReplace
 
 	// Template vars
 	takeConfig.Vars = make(map[string]string)

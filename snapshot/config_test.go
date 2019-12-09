@@ -125,12 +125,12 @@ func TestProcessTakeConfig(t *testing.T) {
 		{
 			purpose: "Simple valid config",
 			in: &TakeConfig{
-				DashSlug: "test-slug",
-				From:     &from,
-				To:       &to,
+				DashUID: "test-slug",
+				From:    &from,
+				To:      &to,
 			},
 			expected: &TakeConfig{
-				DashSlug:     "test-slug",
+				DashUID:      "test-slug",
 				From:         &from,
 				To:           &to,
 				Vars:         make(map[string]string),
@@ -142,7 +142,7 @@ func TestProcessTakeConfig(t *testing.T) {
 		{
 			purpose: "Complete valid config",
 			in: &TakeConfig{
-				DashSlug:     "test-slug",
+				DashUID:      "test-slug",
 				From:         &from,
 				To:           &to,
 				Vars:         vars,
@@ -150,7 +150,7 @@ func TestProcessTakeConfig(t *testing.T) {
 				SnapshotName: "My Test Snapshot",
 			},
 			expected: &TakeConfig{
-				DashSlug:     "test-slug",
+				DashUID:      "test-slug",
 				From:         &from,
 				To:           &to,
 				Vars:         vars,
@@ -162,9 +162,9 @@ func TestProcessTakeConfig(t *testing.T) {
 		{
 			purpose: "Invalid time-range",
 			in: &TakeConfig{
-				DashSlug: "test-slug",
-				From:     &to,
-				To:       &from,
+				DashUID: "test-slug",
+				From:    &to,
+				To:      &from,
 			},
 			expected: nil,
 			valid:    false,

@@ -22,12 +22,14 @@ type Config struct {
 // TakeConfig for defining exactly which dashboard and time-range to snapshot,
 // and also the name and expiry duration of the snapshot.
 type TakeConfig struct {
-	DashSlug     string
-	From         *time.Time
-	To           *time.Time
-	Vars         map[string]string
-	Expires      time.Duration
-	SnapshotName string
+	DashUID         string
+	From            *time.Time
+	To              *time.Time
+	Vars            map[string]string
+	Expires         time.Duration
+	SnapshotName    string
+	SnapshotKey     string
+	SnapshotReplace bool
 }
 
 func processConfig(configIn *Config) (*Config, error) {
@@ -74,10 +76,10 @@ func processTakeConfig(configIn *TakeConfig) (*TakeConfig, error) {
 	configOut := &TakeConfig{}
 
 	// Parse DashSlug
-	if len(configIn.DashSlug) == 0 {
-		return nil, errors.New("Missing required Config field: \"DashSlug\"")
+	if len(configIn.DashUID) == 0 {
+		return nil, errors.New("Missing required Config field: \"DashUID\"")
 	}
-	configOut.DashSlug = configIn.DashSlug
+	configOut.DashUID = configIn.DashUID
 
 	// Parse From
 	if configIn.From == nil {
@@ -107,10 +109,12 @@ func processTakeConfig(configIn *TakeConfig) (*TakeConfig, error) {
 	}
 	// Parse SnapshotName
 	if len(configIn.SnapshotName) == 0 {
-		configOut.SnapshotName = fmt.Sprintf("%s %s", configIn.To.Format("2006-01-02"), configIn.DashSlug)
+		configOut.SnapshotName = fmt.Sprintf("%s %s", configIn.To.Format("2006-01-02"), configIn.DashUID)
 	} else {
 		configOut.SnapshotName = configIn.SnapshotName
 	}
+	configOut.SnapshotKey = configIn.SnapshotKey
+	configOut.SnapshotReplace = configIn.SnapshotReplace
 
 	// return ok
 	return configOut, nil
